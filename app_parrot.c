@@ -2,6 +2,8 @@
  * phoneparrot - Phone Parrot
  * Version 0.1.1
  *
+ * Modified by cmendes0101 <cmendes0101@gmail.com>
+ *
  * Copyright (c) 2006-2012 Justine Tunney
  *
  * Justine Tunney <jtunney@lobstertech.com>
@@ -11,7 +13,7 @@
  * This program is free software, distributed under the terms of
  * the GNU General Public License version 2.0 or later.
  */
-
+ 
 #define AST_MODULE "app_parrot"
 
 #include <stdio.h>
@@ -31,10 +33,14 @@
 #include <asterisk/lock.h>
 #include <asterisk/app.h>
 #include <asterisk/dsp.h>
-#ifdef _LIBSOUNDTOUCH4C_
-#include <soundtouch4c.h>
-#endif
 #include <asterisk/stringfields.h>
+
+#include "voicechanger.h"
+
+struct voicechanger {
+    void *st8k;
+    void *st16k;
+};
 
 static char *moddesc = "Phone Parrot";
 
@@ -48,19 +54,11 @@ static char *parrot_descrip = ""
     "  the caller is saying.  When the caller stops talking, recording\n"
     "  buffer of what s?he just said is played back.\n"
     "\n"
-#ifdef _LIBSOUNDTOUCH4C_
     "  You may also chose to add a voice pitch change effect to what\n"
     "  the caller just said with the P() option.  Pitch is specified\n"
     "  in semi-tones.  -5.0 is good for making the voice lower and\n"
     "  5.0 is good for making the voice higher.\n"
     "\n"
-#else
-    "  If you install SoundTouch and libsoundtouch4c (Also available\n"
-    "  at www.lobstertech.com) and then recompile this module, it\n"
-    "  will include support for changing the pitch of the caller\'s\n"
-    "  voice when echo\'d back.\n"
-    "\n"
-#endif
     "Options:\n"
     "  T(...) - Silence Threshold, default 256\n"
     "  W(...) - Milliseconds of silence before repeat.  Default 1000\n"
@@ -80,9 +78,7 @@ static char *parrot_descrip = ""
     "  H(...) - Hangup after a certain number of seconds\n"
     "  I(...) - Repeat may be interrupted if caller speaks for '...'\n"
     "           milliseconds.  Default is 400, 0 turns off\n"
-#ifdef _LIBSOUNDTOUCH4C_
     "  P(...) - New pitch of voice echo'd back. Default 0.0\n"
-#endif
     ;
 
 #define OPT_PARROT_THRESHOLD  (1 << 0)
@@ -190,9 +186,9 @@ static int parrot_main(struct ast_channel *chan, const struct parrot_ops *ops)
     int msofsilence = 0;
     short data[SAMPPERFRAME]; /* used to temp copy frame data */
     struct mybuffer in, out;
-#ifdef _LIBSOUNDTOUCH4C_
-    struct soundtouch *st;
-#endif
+    struct voicechanger *vc;
+    void *st;
+
     int greeted = 0;
 
     if ((ops->options & OPT_PARROT_HANGUP) == OPT_PARROT_HANGUP) {
@@ -226,14 +222,16 @@ static int parrot_main(struct ast_channel *chan, const struct parrot_ops *ops)
         return -1;
     }
 
-#ifdef _LIBSOUNDTOUCH4C_
-    if (!(st = soundtouch_create(ops->pitch))) {
+    /* create soundtouch object */
+    vc = ast_calloc(1, sizeof(struct voicechanger));
+    if (!(vc->st8k = vc_soundtouch_create(8000, ops->pitch)) ||
+        !(vc->st16k = vc_soundtouch_create(16000, ops->pitch))) {
+        ast_log(LOG_ERROR, "failed to make soundtouch\n");
         free(in.buf);
         free(out.buf);
         ast_dsp_free(dsp);
         return -1;
     }
-#endif
 
     in.end = in.cur = in.buf;
     out.end = out.cur = out.buf;
@@ -261,19 +259,37 @@ static int parrot_main(struct ast_channel *chan, const struct parrot_ops *ops)
             f->delivery.tv_usec = 0;
             if (out.end - out.cur < SAMPPERFRAME) {
                 memset(f->data.ptr, 0, SAMPPERFRAME * sizeof(short));
-                memcpy(f->data.ptr, (void *)out.cur, (void *)out.end - (void *)out.cur);
+                memcpy(f->data.ptr, (void *)out.cur, (char *)out.end - (char *)out.cur);
                 out.end = out.cur = out.buf;
             } else {
                 memcpy(f->data.ptr, (void *)out.cur, SAMPPERFRAME * sizeof(short));
                 out.cur += SAMPPERFRAME;
             }
-#ifdef _LIBSOUNDTOUCH4C_
+
             if (ops->pitch != 0.0) {
-                SoundTouch_putSamples(st, f->data, SAMPPERFRAME);
-                memset(f->data.ptr, 0, SAMPPERFRAME * sizeof(short));
-                f->samples = SoundTouch_receiveSamplesEx(st, f->data, SAMPPERFRAME);
+
+                if (f->data.ptr == NULL || f->samples == 0 ||
+                    f->frametype != AST_FRAME_VOICE) {
+                    ast_log(LOG_WARNING, "got incompatible frame\n");
+                    return 0;
+                }
+
+                switch (f->subclass.format.id) {
+                case AST_FORMAT_SLINEAR:
+                    st = vc->st8k;
+                    break;
+                case AST_FORMAT_SLINEAR16:
+                    st = vc->st16k;
+                    break;
+                default:
+                    ast_log(LOG_WARNING, "only 8khz and 16khz slinear audio supported!\n");
+                    return 0;
+                }
+                float fbuf[f->samples];
+                vc_voice_change(st, fbuf, (int16_t *)f->data.ptr,
+                                f->samples, f->datalen);
             }
-#endif
+
             if (ast_write(chan, f) == -1)
                 BREAKFREE;
         }
@@ -297,14 +313,14 @@ static int parrot_main(struct ast_channel *chan, const struct parrot_ops *ops)
                 mode = MODE_SILENCE;
                 in.end = in.cur = in.buf;
                 out.end = out.cur = out.buf;
-                if (ast_streamfile(chan, ops->soundclips[rand() % ops->soundclipcnt], chan->language) == -1)
+                if (ast_streamfile(chan, ops->soundclips[rand() % ops->soundclipcnt], ast_channel_language(chan)) == -1)
                     goto OHSNAP;
                 if (ast_waitstream(chan, "") == -1)
                     goto OHSNAP;
                 ast_stopstream(chan);
                 continue;
             }
-            memcpy((void *)out.buf, (void *)in.buf, (void *)in.end - (void *)in.buf);
+            memcpy((void *)out.buf, (void *)in.buf, (char *)in.end - (char *)in.buf);
             out.cur = out.buf;
             out.end = out.buf + (in.end - in.buf);
             in.end = in.cur = in.buf;
@@ -367,7 +383,7 @@ static int parrot_main(struct ast_channel *chan, const struct parrot_ops *ops)
                     in.end = in.cur = in.buf;
                     out.end = out.cur = out.buf;
                     greeted = 1;
-                    if (ast_streamfile(chan, ops->greetclips[rand() % ops->greetclipcnt], chan->language) == -1)
+                    if (ast_streamfile(chan, ops->greetclips[rand() % ops->greetclipcnt], ast_channel_language(chan)) == -1)
                         goto OHSNAP;
                     if (ast_waitstream(chan, "") == -1)
                         goto OHSNAP;
@@ -379,7 +395,7 @@ static int parrot_main(struct ast_channel *chan, const struct parrot_ops *ops)
                     in.end += msofsilence < 300 ? msofsilence * 8 : 300 * 8;
                     if (in.end > in.cur)
                         in.end = in.cur;
-                    memcpy((void *)out.buf, (void *)in.buf, (void *)in.end - (void *)in.buf);
+                    memcpy((void *)out.buf, (void *)in.buf, (char *)in.end - (char *)in.buf);
                     out.cur = out.buf;
                     out.end = out.buf + (in.end - in.buf);
                     in.end = in.cur = in.buf;
@@ -401,9 +417,8 @@ OHSNAP:
     ast_dsp_free(dsp);
     free(in.buf);
     free(out.buf);
-#ifdef _LIBSOUNDTOUCH4C_
-    soundtouch_free(st);
-#endif
+    vc_soundtouch_free(vc->st8k); vc->st8k = NULL;
+    vc_soundtouch_free(vc->st16k); vc->st16k = NULL;
 
     return 0;
 }
@@ -495,12 +510,10 @@ static int parrot_app_exec(struct ast_channel *chan, const char *data)
             ops.options |= OPT_PARROT_INTERRUPT;
             ops.hangup = strtol(opt_args[OPT_ARG_PARROT_INTERRUPT], NULL, 10);
         }
-#ifdef _LIBSOUNDTOUCH4C_
         if (ast_test_flag(&opts, OPT_PARROT_PITCH) && !ast_strlen_zero(opt_args[OPT_ARG_PARROT_PITCH])) {
             ops.options |= OPT_PARROT_PITCH;
             ops.pitch = strtof(opt_args[OPT_ARG_PARROT_PITCH], NULL);
         }
-#endif
     }
 
     return parrot(chan, &ops);

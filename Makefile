@@ -1,26 +1,19 @@
-#
-# Asterisk Phone ParrotMakefile
-#
-# Copyright (C) 2005-2012 Justine Tunney
-#
-# Justine Tunney <jtunney@lobstertech.com>
-#
-# This program is free software, distributed under the terms of
-# the GNU General Public License v2.0 or later
-#
+CFLAGS = -g -O2 -shared -fPIC -Wall -pedantic
+LDFLAGS = -lSoundTouch
 
-CC          = gcc
+all: app_parrot.so
 
-PREFIX      = /usr
-MODULES_DIR = $(PREFIX)/lib/asterisk/modules
+app_parrot.so: app_parrot.o voicechanger.o
+	g++ $(CFLAGS) -o $@ $^ $(LDFLAGS)
 
-MODS        = app_parrot.so
-CFLAGS      = -O -g -D_GNU_SOURCE -shared -fpic
-LDFLAGS     = 
+app_parrot.o: app_parrot.c
+	gcc $(CFLAGS) --std=gnu99 -c -o $@ $<
 
-ifneq ($(wildcard /usr/include/soundtouch4c.h /usr/local/include/soundtouch4c.h),)
-CFLAGS+=-D_LIBSOUNDTOUCH4C_
-SOLINK+=-lsoundtouch4c
-endif
+voicechanger.o: voicechanger.cpp
+	g++ $(CFLAGS) -c -o $@ $<
 
-include Makefile.inc
+install: all
+	cp -av app_parrot.so /usr/lib/asterisk/modules/
+
+clean:
+	rm -f *.o *.so

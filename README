@@ -9,15 +9,18 @@
          /.'`\ :;    /'       `-.
         -`    |     |
               :.; : |            Phone Parrot for Asterisk
-              |:    |                  Version o.1.1
+              |:    |                  Version 0.2.0
               |     |
               :. :  |      Copyright (c) 2006-2012 Justine Tunney
             .jgs    ;             Keep it open source pigs
             /:::.    `\
 ----------------------------------------------------------------------
 
+Chris Mendes <cmendes0101@gmail.com> 
+https://github....
+
 Justine Tunney <jtunney@lobstertech.com>
-http://www.lobstertech.com/code/phoneparrot/
+http://www.lobstertech.com/code/phoneparrot/ (Broken Link!)
 
 ----------------------------------------------------------------------
 DESCRIPTION
@@ -26,4 +29,35 @@ DESCRIPTION
 This application repeats back to caller what they say like a child
 would when playing a copycat game.  For more information please
 install and type `show application parrot` on the Asterisk command
-line.  You can also get infromation from the website.
+line.
+
+----------------------------------------------------------------------
+INSTALLATION
+----------------------------------------------------------------------
+
+Requirements for this release:
+ - Asterisk 11+
+ - SoundTouch >= 1.3.1 (apt-get install libsoundtouch-dev)
+
+Once you've installed the software listed above, run these commands:
+  make
+  make install
+  asterisk -rx 'module load app_parrot.so'
+  asterisk -rx 'core show application Parrot'
+
+----------------------------------------------------------------------
+EXAMPLES
+----------------------------------------------------------------------
+
+ ; annoying parrot
+ exten => 9000,1,Parrot(P(4.0))
+
+----------------------------------------------------------------------
+ABOUT FORK
+----------------------------------------------------------------------
+All credit goes to Justine Tunney, I just meshed her work together.
+Justine's last commit was to compile for Asterisk 10 but soundtouch4c
+would not work for me on newer Debian or Ubuntu.
+asterisk-voicechanger had been modified to use SoundTouch 1.3.1 or
+higher so I converted this module to do the same and now everything
+is working good.
